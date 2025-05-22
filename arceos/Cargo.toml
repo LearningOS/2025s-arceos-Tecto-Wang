@@ -18,18 +18,14 @@ members = [
     "modules/axtask",
     "modules/bump_allocator",
     "modules/riscv_vcpu",
-
     "api/axfeat",
     "api/arceos_api",
     "api/arceos_posix_api",
-
     "ulib/axstd",
     "ulib/axlibc",
-
     "payload/origin",
     "payload/skernel",
     "payload/skernel2",
-
     "tour/u_1_0",
     "tour/u_2_0",
     "tour/u_3_0",
@@ -48,7 +44,6 @@ members = [
     "tour/h_2_0",
     "tour/h_3_0",
     "tour/h_4_0",
-
     "exercises/print_with_color",
     "exercises/support_hashmap",
     "exercises/alt_alloc",
@@ -92,6 +87,7 @@ axdma = { path = "modules/axdma" }
 elf = { path = "modules/elf" }
 
 [patch.crates-io]
-kernel_guard = { path = "../crates/kernel_guard"} 
+kernel_guard = { path = "../crates/kernel_guard" }
+axfs_ramfs = { path = "./axfs_ramfs" }
 [profile.release]
 lto = true

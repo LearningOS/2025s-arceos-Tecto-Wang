@@ -1,7 +1,8 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
-use alloc::{string::String, vec::Vec};
-
+use alloc::{format, string::String, vec, vec::Vec};
+use alloc::borrow::ToOwned;
+use alloc::string::ToString;
 use axfs_vfs::{VfsDirEntry, VfsNodeAttr, VfsNodeOps, VfsNodeRef, VfsNodeType};
 use axfs_vfs::{VfsError, VfsResult};
 use spin::RwLock;
@@ -67,6 +68,14 @@ impl DirNode {
         children.remove(name);
         Ok(())
     }
+
+    fn get_root(&self) -> Option<VfsNodeRef> {
+        let mut current: VfsNodeRef = self.this.upgrade()?;
+        while let Some(parent) = current.parent() {
+            current = parent;
+        }
+        Some(current)
+    }
 }
 
 impl VfsNodeOps for DirNode {
@@ -96,25 +105,6 @@ impl VfsNodeOps for DirNode {
         } else {
             Ok(node)
         }
-    }
-
-    fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> VfsResult<usize> {
-        let children = self.children.read();
-        let mut children = children.iter().skip(start_idx.max(2) - 2);
-        for (i, ent) in dirents.iter_mut().enumerate() {
-            match i + start_idx {
-                0 => *ent = VfsDirEntry::new(".", VfsNodeType::Dir),
-                1 => *ent = VfsDirEntry::new("..", VfsNodeType::Dir),
-                _ => {
-                    if let Some((name, node)) = children.next() {
-                        *ent = VfsDirEntry::new(name, node.get_attr().unwrap().file_type());
-                    } else {
-                        return Ok(i);
-                    }
-                }
-            }
-        }
-        Ok(dirents.len())
     }
 
     fn create(&self, path: &str, ty: VfsNodeType) -> VfsResult {
@@ -163,6 +153,64 @@ impl VfsNodeOps for DirNode {
         } else {
             self.remove_node(name)
         }
+    }
+
+    fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> VfsResult<usize> {
+        let children = self.children.read();
+        let mut children = children.iter().skip(start_idx.max(2) - 2);
+        for (i, ent) in dirents.iter_mut().enumerate() {
+            match i + start_idx {
+                0 => *ent = VfsDirEntry::new(".", VfsNodeType::Dir),
+                1 => *ent = VfsDirEntry::new("..", VfsNodeType::Dir),
+                _ => {
+                    if let Some((name, node)) = children.next() {
+                        *ent = VfsDirEntry::new(name, node.get_attr().unwrap().file_type());
+                    } else {
+                        return Ok(i);
+                    }
+                }
+            }
+        }
+        Ok(dirents.len())
+    }
+
+    fn rename(&self, src_path: &str, dst_path: &str) -> VfsResult {
+        log::warn!("rename at ramfs: {} -> {}", src_path, dst_path);
+        let (src_rest, src_name) = split_path(src_path);
+
+        
+        // 1. 获取 src 节点
+        let node = {
+            match self.children.write().remove(src_rest) {
+                Some(node) => node,
+                None => {
+                    log::error!("Source '{}' not found for rename", src_path);
+                    return Err(VfsError::NotFound);
+                }
+            }
+        };
+        let ty = node.get_attr().map(|attr| attr.file_type()).unwrap_or(VfsNodeType::File);
+        log::warn!("Checking if destination '{}' already exists", dst_path);
+
+        // 2. 检查目标是否已存在
+        if self.children.read().contains_key(dst_path) {
+            log::error!("Destination '{}' already exists", dst_path);
+            return Err(VfsError::AlreadyExists);
+        }
+        
+        // 拆出 /tmp/f2 => dst_dir_path = "/tmp", dst_file_name = "f2"
+        let dst_path_trim = dst_path.trim_start_matches('/');
+        let last_slash = dst_path_trim.rfind('/');
+        let (dst_dir_path, dst_file_name) = match last_slash {
+            Some(pos) => (&dst_path_trim[..pos], &dst_path_trim[pos + 1..]),
+            None => ("", dst_path_trim),
+        };
+
+        // 3. 插入新节点
+        self.create_node(dst_file_name, ty)?;
+        log::warn!("Renamed '{}' to '{}'", src_path, dst_path);
+
+        Ok(())
     }
 
     axfs_vfs::impl_vfs_dir_default! {}
