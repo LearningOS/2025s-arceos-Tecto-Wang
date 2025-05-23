@@ -1,13 +1,15 @@
 #![allow(dead_code)]
 
-use core::ffi::{c_void, c_char, c_int};
-use axhal::arch::TrapFrame;
-use axhal::trap::{register_trap_handler, SYSCALL};
+use alloc::vec;
+use arceos_posix_api as api;
 use axerrno::LinuxError;
+use axhal::arch::TrapFrame;
+use axhal::paging::MappingFlags;
+use axhal::trap::{register_trap_handler, SYSCALL};
 use axtask::current;
 use axtask::TaskExtRef;
-use axhal::paging::MappingFlags;
-use arceos_posix_api as api;
+use core::ffi::{c_char, c_int, c_void};
+use memory_addr::{align_up, MemoryAddr, VirtAddr, VirtAddrRange, PAGE_SIZE_4K};
 
 const SYS_IOCTL: usize = 29;
 const SYS_OPENAT: usize = 56;
@@ -140,7 +142,57 @@ fn sys_mmap(
     fd: i32,
     _offset: isize,
 ) -> isize {
-    unimplemented!("no sys_mmap!");
+    if length == 0 {
+        return -LinuxError::EINVAL.code() as _;
+    }
+
+    let prot = MmapProt::from_bits_truncate(prot);
+    let flags = MmapFlags::from_bits_truncate(flags);
+    let aligned_len = align_up(length, PAGE_SIZE_4K);
+    let task = current();
+    let mut memory = task.as_task_ref().inner().task_ext().aspace.lock();
+    let mapping_flags: MappingFlags = prot.into();
+
+    // 决定起始地址
+    let base_va = if addr.is_null() {
+        // 从整个地址空间中找空闲区域
+        let va_range = VirtAddrRange::from_start_size(memory.base(), memory.size());
+        memory
+            .find_free_area(VirtAddr::from(0), aligned_len, va_range)
+            .unwrap_or_else(|| {
+                panic!("sys_mmap: cannot find free area for length {}", aligned_len);
+            })
+    } else {
+        VirtAddr::from(addr as usize)
+    };
+
+    // 匿名映射
+    if flags.contains(MmapFlags::MAP_ANONYMOUS) {
+        if let Err(e) = memory.map_alloc(base_va, aligned_len, mapping_flags, true) {
+            return -e.code() as _;
+        }
+        return base_va.as_usize() as isize;
+    }
+
+    // 文件映射
+    let file = match api::get_file_like(fd) {
+        Ok(f) => f,
+        Err(e) => return -e.code() as isize,
+    };
+    
+    // 读取文件内容到缓冲区
+    let mut buf = vec![0u8; aligned_len];
+    let read_len = file.read(&mut *buf).unwrap_or(0);
+
+    if let Err(e) = memory.map_alloc(base_va, aligned_len, mapping_flags, true) {
+        return -e.code() as _;
+    }
+
+    if let Err(e) = memory.write(base_va, &buf[..read_len]) {
+        return -e.code() as _;
+    }
+
+    base_va.as_usize() as isize
 }
 
 fn sys_openat(dfd: c_int, fname: *const c_char, flags: c_int, mode: api::ctypes::mode_t) -> isize {
